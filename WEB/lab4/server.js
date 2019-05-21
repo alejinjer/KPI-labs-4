@@ -1,24 +1,80 @@
-'use strict'
-const express = require('express');
-const app = express();
-const bodyParser = require('body-parser');
-const qs = require('querystring');
+'use strict';
 
-let urlencodedParser = bodyParser.urlencoded({extended: false});
+const http = require('http');
+const fs = require('fs');
+const url = require('url');
+const path = require('path');
 
-app.use('/', express.static('./'))
-app.use('/styles/', express.static('./styles'))
-app.use('/img/', express.static('./img'))
-app.use('/audio/', express.static('./audio'))
-app.use('/video/', express.static('./video'))
+const Busboy = require('busboy');
+const database = require('./db');
 
-app.get('/', (req, res) => {
-    res.send('<h1 style="margin:30px;">Put your path ^^^<h1>');
+let throwError = function (err) {
+    if (err) {
+        throw err;
+    }
+}
+
+const table = database.feedbackDB;
+const notes = database.notesDB;
+table.ctor((err) => { throwError(err) });
+notes.ctor((err) => { throwError(err) });
+
+const defineContentType = type => {
+    switch (type) {
+        case '.css': return 'text/css';
+        case '.js': return 'text/javascript';
+        case '.json': return 'application/json';
+        case '.mp4': return 'video/mp4';
+        case '.mp3': return 'audio/mp3';
+        case '.png': return 'image/png';
+        case '.jpg': return 'image/jpg';
+        case '.jpeg': return 'image/jpeg';
+        default: return 'text/html';
+    }
+};
+
+const server = http.createServer(function (req, res) {
+    if (req.method == 'GET') {
+        let filename = '.' + url.parse(req.url).pathname;
+        fs.readFile(filename, function (err, data) {
+            if (err) {
+                res.writeHead(404, { 'Content-Type': 'text/html' });
+                return res.end("404 Not Found");
+            }
+            res.writeHead(200, { 'Content-Type': defineContentType(path.extname(filename)) });
+            res.write(data);
+            res.end();
+        });
+    } else if (req.method === "POST") {
+
+        let targetDATABASE;
+        url.parse(req.url).pathname == '/feedback' ?
+            targetDATABASE = table :
+            targetDATABASE = notes;
+
+        let busboy = new Busboy({ headers: req.headers });
+        let fieldValues = [];
+        busboy.on('file', function (fieldname, file, filename, encoding, mimetype) {
+            if (filename) {
+                let filepath = path.join('./storage/', path.basename(filename));
+                console.log(filepath);
+                fieldValues.push(filename);
+                file.pipe(fs.createWriteStream(filepath));
+            } else {
+                file.resume();
+            }
+        });
+        busboy.on('field', function (fieldname, val, fieldnameTruncated, valTruncated, encoding, mimetype) {
+            fieldValues.push(val);
+        });
+        busboy.on('finish', function () {
+            targetDATABASE.insertRecord(fieldValues, throwError);
+            console.log('Done parsing form!');            
+            res.writeHead(303, { Connection: 'close', Location: '/feedback.html' });
+            res.end();
+        });
+        req.pipe(busboy);
+    }
 });
 
-app.post('/feedback', urlencodedParser, (req, res) => {
-    console.log(req.body);
-    res.render('./feedback', {qs: req.query});
-});
-
-app.listen(8080, () => console.log('Listening on port 8080'));
+server.listen(8080);
